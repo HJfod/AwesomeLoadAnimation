@@ -15,6 +15,34 @@ bool g_useMulti = true;
 static std::vector<std::string> g_toMulti;
 static Timer perf;
 
+static constexpr const float g_loadingBarWidth = 250.f;
+
+HWND glfwGetWin32Window(GLFWwindow* window) {
+    static auto cocosBase = GetModuleHandleA("libcocos2d.dll");
+
+    auto pRet = reinterpret_cast<HWND(__cdecl*)(GLFWwindow*)>(
+        reinterpret_cast<uintptr_t>(cocosBase) + 0x112c10
+    )(window);
+
+    return pRet;
+}
+
+HWND getGDHWND() {
+    static HWND g_hwnd = nullptr;
+
+    if (!g_hwnd) {
+        auto dir = CCDirector::sharedDirector();
+        if (!dir) return nullptr;
+        auto opengl = dir->getOpenGLView();
+        if (!opengl) return nullptr;
+        auto wnd = dir->getOpenGLView()->getWindow();
+        if (!wnd) return nullptr;
+        g_hwnd = glfwGetWin32Window(wnd);
+    }
+
+    return g_hwnd;
+}
+
 ccColor3B rainbow(float l) {
     float r, g, b;
          if (l<380.f) r=      0.00f;
@@ -214,6 +242,22 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
         if (!LoadingLayer::init(fromReload))
             return false;
 
+        for (auto& [addr, patch] : std::unordered_map<uintptr_t, byte_array> {
+            { 0x11388b, { 0x90, 0x90, 0x90, 0x90, 0x90 } },
+            { 0x11339d, { 0xb9, 0xff, 0xff, 0xff, 0x7f, 0x90, 0x90 } },
+            { 0x1133c0, { 0x48 } },
+            { 0x1133c6, { 0x48 } },
+            { 0x112536, { 0xeb, 0x11, 0x90 } },
+        }) {
+            static auto base = GetModuleHandleA("libcocos2d.dll");
+            auto res = Mod::get()->patch(as<void*>(as<uintptr_t>(base) + addr), patch);
+        }
+
+        int w = GetSystemMetrics(SM_CXSCREEN);
+        int h = GetSystemMetrics(SM_CYSCREEN);
+        SetWindowLongPtr(getGDHWND(), GWL_STYLE, WS_OVERLAPPED | WS_VISIBLE);
+        SetWindowPos(getGDHWND(), HWND_TOP, 0, 0, w, h, SWP_FRAMECHANGED);
+
         perf.reset();
 
         if (g_useMulti) {
@@ -234,12 +278,32 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
 
         auto winSize = CCDirector::sharedDirector()->getWinSize();
 
-        this->m_sliderBar->retain();
+        m_sliderBar->retain();
         this->removeAllChildren();
 
         constexpr const int displayCount = 4;
 
         this->setPosition(winSize.width, 0);
+
+        auto bg = CCLayerColor::create({ 20, 20, 20, 255 });
+        bg->setPosition(-winSize.width, .0f);
+        bg->setTag(5);
+        this->addChild(bg);
+        
+        auto barBG = CCScale9Sprite::create("bar.png"_spr);
+        barBG->setPosition(winSize.width / 2, winSize.height / 2 - 50.f);
+        barBG->setOpacity(50);
+        barBG->setScale(.2f);
+        barBG->setContentSize({ g_loadingBarWidth, 12 });
+        bg->addChild(barBG);
+        
+        auto barThumb = CCScale9Sprite::create("bar.png"_spr);
+        barThumb->setPosition(winSize.width / 2 - g_loadingBarWidth / 2 * .2f, winSize.height / 2 - 50.f);
+        barThumb->setTag(6);
+        barThumb->setScale(.2f);
+        barThumb->setContentSize({ 0, 12 });
+        barThumb->setAnchorPoint({ .0f, .5f });
+        bg->addChild(barThumb);
 
         auto menu = CCMenu::create();
         std::set<int> used;
@@ -261,17 +325,18 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
                     rainbow(i / static_cast<float>(displayCount) * 320.f + 430.f),
                     80
                 );
-                icon->setScale(.35f);
+                icon->setScale(.3f);
                 icon->setOpacity(0);
                 icon->runAction(CCSequence::create(
                     CCMoveBy::create(.0f, { .0f, -40.f }),
+                    CCScaleTo::create(.0f, .1f),
                     CCDelayTime::create(i * .1f),
                     CCSpawn::create(
                         CCFadeTo::create(.2f, 255),
                         CCEaseOut::create(
                             CCSpawn::create(
                                 CCMoveBy::create(.2f, { .0f, 50.f }),
-                                CCScaleTo::create(.2f, .3f, .4f),
+                                CCScaleTo::create(.2f, .25f, .4f),
                                 CCTintTo::create(.2f, color.r, color.g, color.b),
                                 nullptr
                             ), 2.f
@@ -283,7 +348,7 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
                             CCSpawn::create(
                                 CCEaseBackOut::create(
                                     CCSpawn::create(
-                                        CCScaleTo::create(.2f, .35f, .35f),
+                                        CCScaleTo::create(.2f, .25f, .25f),
                                         CCMoveBy::create(.2f, { .0f, -10.f }),
                                         nullptr
                                     )
@@ -295,7 +360,7 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
                             CCEaseOut::create(
                                 CCSpawn::create(
                                     CCMoveBy::create(.2f, { .0f, 10.f }),
-                                    CCScaleTo::create(.2f, .3f, .4f),
+                                    CCScaleTo::create(.2f, .25f, .4f),
                                     CCTintTo::create(.2f, color.r, color.g, color.b),
                                     nullptr
                                 ), 2.f
@@ -311,17 +376,75 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
         }
         menu->alignItemsHorizontallyWithPadding(7.f);
 
-        auto label = CCLabelBMFont::create("Loading Geode...", "chatFont.fnt");
-        label->setPosition(.0f, -40.f);
+        auto label = CCLabelBMFont::create("Loading Geometry Dash...", "chatFont.fnt");
+        label->setPosition(.0f, -30.f);
         label->setScale(.65f);
         label->setOpacity(0);
         label->runAction(CCFadeTo::create(.3f, 255));
         menu->addChild(label);
+
+        auto [count, unresolvedCount] = Loader::get()->getLoadedModCount();
+        const char* text = unresolvedCount ?
+            CCString::createWithFormat(
+                "Geode: Loaded %lu mods (%lu unresolved)",
+                static_cast<unsigned long>(count),
+                static_cast<unsigned long>(unresolvedCount)
+            )->getCString() : 
+            CCString::createWithFormat(
+                "Geode: Loaded %lu mods",
+                static_cast<unsigned long>(count)
+            )->getCString();
+
+        auto infoLabel = CCLabelBMFont::create(text, "chatFont.fnt");
+        infoLabel->setPosition(winSize.width / 2, winSize.height / 2 + 120.f);
+        infoLabel->setScale(.45f);
+        bg->addChild(infoLabel);
+
+        auto info = CCSprite::create("info.png"_spr);
+        info->setPosition({
+            winSize.width / 2 - infoLabel->getScaledContentSize().width / 2 - 7.f,
+            winSize.height / 2 + 120.f
+        });
+        info->setScale(.2f);
+        info->setOpacity(125);
+        bg->addChild(info);
+
+        auto tipBG = cocos2d::extension::CCScale9Sprite::create(
+            "square02b_001.png", { 0.0f, 0.0f, 80.0f, 80.0f }
+        );
+        tipBG->setScale(.3f);
+        tipBG->setColor({ 0, 0, 0 });
+        tipBG->setOpacity(75);
+        tipBG->setPosition(winSize.width / 2, winSize.height / 2 - 100.f);
+        bg->addChild(tipBG);
+
+        auto tipLabel = CCLabelBMFont::create("Tip: Why do they call it oven when\nyou of in the cold food of out hot\neat the food", "chatFont.fnt");
+        tipLabel->setPosition(winSize.width / 2 + 5.f, winSize.height / 2 - 100.f);
+        tipLabel->setScale(.45f);
+        bg->addChild(tipLabel);
+
+        auto tip = CCSprite::create("tip.png"_spr);
+        tip->setPosition({
+            winSize.width / 2 - tipLabel->getScaledContentSize().width / 2 - 5.f,
+            winSize.height / 2 - 100.f
+        });
+        tip->setScale(.2f);
+        tip->setOpacity(125);
+        bg->addChild(tip);
+
+        tipBG->setContentSize((tipLabel->getScaledContentSize() + CCSize { 8.f, 4.f }) / .3f * 1.25f);
         
-        menu->setPosition(-winSize.width / 2, winSize.height / 2);
-        this->addChild(menu);
+        menu->setPosition(winSize / 2);
+        bg->addChild(menu);
 
         return true;
+    }
+
+    void loadAssets() {
+        this->getChildByTag(5)->getChildByTag(6)->setContentSize({
+            m_loadStep / 23.f * g_loadingBarWidth, 12.f
+        });
+        LoadingLayer::loadAssets();
     }
 
     void gotoMenu() {
@@ -334,10 +457,15 @@ class $modify(CustomLoadingLayer, LoadingLayer) {
 
     void loadingFinished() {
         if (g_useMulti) {
+            m_loadStep++;
+            this->getChildByTag(5)->getChildByTag(6)->setContentSize({
+                m_loadStep / 23.f * g_loadingBarWidth, 12.f
+            });
             g_differentAddImage = false;
             g_loadingReady = this;
             if (g_toMulti.empty()) {
                 CustomLoadingLayer::gotoMenu();
+                m_sliderBar->release();
             }
         } else {
             LoadingLayer::loadingFinished();
